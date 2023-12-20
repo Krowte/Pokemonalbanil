@@ -1371,6 +1371,7 @@ export class BestOfGame extends RoomGames.RoomGame {
 	teams: Record<string, PokemonSet[] | null | undefined> = {};
 	constructor(room: Room, options: RoomBattleOptions) {
 		super(room, false);
+		this.gameid = 'bestof' as ID;
 		this.format = Dex.formats.get(options.format);
 		this.bestOf = Number(Dex.formats.getRuleTable(this.format).valueRules.get('bestof'))!;
 		this.winThreshold = Math.floor(this.bestOf / 2) + 1;

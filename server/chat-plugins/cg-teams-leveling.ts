@@ -5,6 +5,7 @@
  */
 
 import {SQL} from "../../lib";
+import {getSpeciesName} from "./randombattles/winrates";
 
 export let addPokemon: SQL.Statement | null = null;
 export let incrementWins: SQL.Statement | null = null;
@@ -33,7 +34,15 @@ if (Config.usesqlite && Config.usesqliteleveling) {
 
 async function updateStats(battle: RoomBattle, winner: ID) {
 	if (!incrementWins || !incrementLosses) await dbSetupPromise;
-	if (battle.rated < 1000 || toID(battle.format) !== 'gen9computergeneratedteams') return;
+	if (toID(battle.format) !== 'gen9computergeneratedteams') return;
+	// if the game is rated or part of a tournament hosted by a public room, it counts
+	if (battle.rated === 1 && battle.room.parent?.game) {
+		let parent = battle.room.parent;
+		if (parent.game!.gameid === 'bestof' && parent.parent?.game) parent = parent.parent;
+		if (parent.game!.gameid !== 'tournament' || parent.settings.isPrivate) return;
+	} else if (battle.rated < 1000) {
+		return;
+	}
 
 	const p1 = Users.get(battle.p1.name);
 	const p2 = Users.get(battle.p2.name);
@@ -52,13 +61,15 @@ async function updateStats(battle: RoomBattle, winner: ID) {
 		winnerTeam = p2team;
 	}
 
-	for (const species of winnerTeam) {
-		await addPokemon?.run([toID(species.species), species.level]);
-		await incrementWins?.run([toID(species.species)]);
+	for (const set of winnerTeam) {
+		const statsSpecies = getSpeciesName(set, Dex.formats.get(battle.format));
+		await addPokemon?.run([toID(statsSpecies), set.level]);
+		await incrementWins?.run([toID(statsSpecies)]);
 	}
-	for (const species of loserTeam) {
-		await addPokemon?.run([toID(species.species), species.level]);
-		await incrementLosses?.run([toID(species.species)]);
+	for (const set of loserTeam) {
+		const statsSpecies = getSpeciesName(set, Dex.formats.get(battle.format));
+		await addPokemon?.run([toID(statsSpecies), set.level]);
+		await incrementLosses?.run([toID(statsSpecies)]);
 	}
 }
 
