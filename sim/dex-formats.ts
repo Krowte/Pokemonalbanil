@@ -567,7 +567,6 @@ export class DexFormats {
 
 	load(): this {
 		if (!this.dex.isBase) throw new Error(`This should only be run on the base mod`);
-		this.dex.includeMods();
 		if (this.formatsListCache) return this;
 
 		const formatsList = [];
@@ -611,7 +610,9 @@ export class DexFormats {
 			if (format.bestOfDefault === undefined) format.bestOfDefault = false;
 			if (format.teraPreviewDefault === undefined) format.teraPreviewDefault = false;
 			if (format.mod === undefined) format.mod = 'gen9';
-			if (!this.dex.dexes[format.mod]) throw new Error(`Format "${format.name}" requires nonexistent mod: '${format.mod}'`);
+			if (!this.dex.scanMods().has(format.mod)) {
+				throw new Error(`Format "${format.name}" requires nonexistent mod: '${format.mod}'`);
+			}
 
 			const ruleset = new Format(format);
 			this.rulesetCache.set(id, ruleset);
@@ -964,6 +965,7 @@ export class DexFormats {
 		if (this.dex.data.Aliases.hasOwnProperty(id)) id = toID(this.dex.data.Aliases[id]);
 		for (const matchType of matchTypes) {
 			if (matchType === 'item' && ruleid === 'noitem') return 'item:noitem';
+
 			let table;
 			switch (matchType) {
 			case 'pokemon': table = this.dex.data.Pokedex; break;

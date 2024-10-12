@@ -1,5 +1,6 @@
+import {Utils} from '../lib';
 import type {PokemonEventMethods, ConditionData} from './dex-conditions';
-import {BasicEffect, toID} from './dex-data';
+import {BasicEffect, toID, assignNewFields} from './dex-data';
 
 interface FlingData {
 	basePower: number;
@@ -105,9 +106,7 @@ export class Item extends BasicEffect implements Readonly<BasicEffect> {
 	declare readonly onEnd?: (this: Battle, target: Pokemon) => void;
 
 	constructor(data: AnyObject) {
-		super(data);
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
-		data = this;
+		super(data, false);
 
 		this.fullname = `item: ${this.name}`;
 		this.effectType = 'Item';
@@ -151,31 +150,63 @@ export class Item extends BasicEffect implements Readonly<BasicEffect> {
 		if (this.onDrive) this.fling = {basePower: 70};
 		if (this.megaStone) this.fling = {basePower: 80};
 		if (this.onMemory) this.fling = {basePower: 50};
+
+		assignNewFields(this, data);
 	}
 }
+
+const EMPTY_ITEM = Utils.deepFreeze(new Item({name: '', exists: false}));
 
 export class DexItems {
 	readonly dex: ModdedDex;
 	readonly itemCache = new Map<ID, Item>();
-	allCache: readonly Item[] | null = null;
+	allCache: readonly Item[];
 
 	constructor(dex: ModdedDex) {
 		this.dex = dex;
+		const Items = dex.data.Items;
+		const parent = dex.parentMod ? dex.mod(dex.parentMod) : undefined;
+		const items = [];
+		for (const _id in Items) {
+			const id = _id as ID;
+			const itemData = Items[id] as any;
+			const itemTextData = this.dex.getDescs('Items', id, itemData);
+			let item = new Item({
+				name: id,
+				...itemData,
+				...itemTextData,
+			});
+			if (item.gen > this.dex.gen) (item as any).isNonstandard = 'Future';
+			if (parent) {
+				const parentItem = parent.items.getByID(id);
+				if (itemData === parent.data.Items[id] &&
+					item.exists === parentItem.exists &&
+					item.isNonstandard === parentItem.isNonstandard &&
+					item.desc === parentItem.desc &&
+					item.shortDesc === parentItem.shortDesc
+				) {
+					item = parentItem;
+				}
+			}
+			items.push(this.dex.deepFreeze(item));
+			if (item.exists) this.itemCache.set(id, item);
+		}
+		this.allCache = Object.freeze(items);
 	}
 
 	get(name?: string | Item): Item {
 		if (name && typeof name !== 'string') return name;
-
-		name = (name || '').trim();
-		const id = toID(name);
+		let id = '' as ID;
+		if (name) id = toID(name.trim());
 		return this.getByID(id);
 	}
 
 	getByID(id: ID): Item {
+		if (id === '') return EMPTY_ITEM;
 		let item = this.itemCache.get(id);
 		if (item) return item;
 		if (this.dex.data.Aliases.hasOwnProperty(id)) {
-			item = this.get(this.dex.data.Aliases[id]);
+			item = this.getByID(toID(this.dex.data.Aliases[id]));
 			if (item.exists) {
 				this.itemCache.set(id, item);
 			}
@@ -186,32 +217,10 @@ export class DexItems {
 			this.itemCache.set(id, item);
 			return item;
 		}
-		if (id && this.dex.data.Items.hasOwnProperty(id)) {
-			const itemData = this.dex.data.Items[id] as any;
-			const itemTextData = this.dex.getDescs('Items', id, itemData);
-			item = new Item({
-				name: id,
-				...itemData,
-				...itemTextData,
-			});
-			if (item.gen > this.dex.gen) {
-				(item as any).isNonstandard = 'Future';
-			}
-		} else {
-			item = new Item({name: id, exists: false});
-		}
-
-		if (item.exists) this.itemCache.set(id, this.dex.deepFreeze(item));
-		return item;
+		return new Item({name: id, exists: false});
 	}
 
 	all(): readonly Item[] {
-		if (this.allCache) return this.allCache;
-		const items = [];
-		for (const id in this.dex.data.Items) {
-			items.push(this.getByID(id as ID));
-		}
-		this.allCache = Object.freeze(items);
 		return this.allCache;
 	}
 }

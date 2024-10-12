@@ -1,5 +1,6 @@
 import {BasicEffect, toID} from './dex-data';
 import type {SecondaryEffect, MoveEventMethods} from './dex-moves';
+import {Utils} from '../lib';
 
 export interface EventMethods {
 	onDamagingHit?: (this: Battle, damage: number, target: Pokemon, source: Pokemon, move: ActiveMove) => void;
@@ -633,7 +634,7 @@ export class Condition extends BasicEffect implements
 	}
 }
 
-const EMPTY_CONDITION: Condition = new Condition({name: '', exists: false});
+const EMPTY_CONDITION: Condition = Utils.deepFreeze(new Condition({name: '', exists: false}));
 
 export class DexConditions {
 	readonly dex: ModdedDex;
@@ -684,6 +685,7 @@ export class DexConditions {
 			condition = new Condition({name: id, exists: false});
 		}
 
+		// FIXME: do you really want to be caching this unconditionally?
 		this.conditionCache.set(id, this.dex.deepFreeze(condition));
 		return condition;
 	}

@@ -1,6 +1,6 @@
 import {Utils} from '../lib';
 import type {ConditionData} from './dex-conditions';
-import {BasicEffect, toID} from './dex-data';
+import {assignNewFields, BasicEffect, toID} from './dex-data';
 
 /**
  * Describes the acceptable target(s) of a move.
@@ -356,6 +356,21 @@ export interface ActiveMove extends MutableMove {
 
 type MoveCategory = 'Physical' | 'Special' | 'Status';
 
+function computeDataMoveGen(num: number, isMax: boolean): number {
+	// special handling for gen8 gmax moves (all of them have num 1000 but they are part of gen8)
+	if (num >= 827 && !isMax) return 9;
+	else if (num >= 743) return 8;
+	else if (num >= 622) return 7;
+	else if (num >= 560) return 6;
+	else if (num >= 468) return 5;
+	else if (num >= 355) return 4;
+	else if (num >= 252) return 3;
+	else if (num >= 166) return 2;
+	else if (num >= 1) return 1;
+	else return 0;
+}
+const DATA_MOVE_IS_MAX_DEFAULT = false;
+
 export class DataMove extends BasicEffect implements Readonly<BasicEffect & MoveData> {
 	declare readonly effectType: 'Move';
 	/** Move type. */
@@ -480,9 +495,7 @@ export class DataMove extends BasicEffect implements Readonly<BasicEffect & Move
 	readonly volatileStatus?: ID;
 
 	constructor(data: AnyObject) {
-		super(data);
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
-		data = this;
+		super(data, false);
 
 		this.fullname = `move: ${this.name}`;
 		this.effectType = 'Move';
@@ -509,7 +522,7 @@ export class DataMove extends BasicEffect implements Readonly<BasicEffect & Move
 		this.pp = Number(data.pp);
 		this.noPPBoosts = !!data.noPPBoosts;
 		this.isZ = data.isZ || false;
-		this.isMax = data.isMax || false;
+		this.isMax = data.isMax || DATA_MOVE_IS_MAX_DEFAULT;
 		this.flags = data.flags || {};
 		this.selfSwitch = (typeof data.selfSwitch === 'string' ? (data.selfSwitch as ID) : data.selfSwitch) || undefined;
 		this.pressureTarget = data.pressureTarget || '';
@@ -560,10 +573,10 @@ export class DataMove extends BasicEffect implements Readonly<BasicEffect & Move
 				}
 			}
 		}
-		if (this.category !== 'Status' && !this.zMove && !this.isZ && !this.isMax && this.id !== 'struggle') {
+		if (this.category !== 'Status' && !data.zMove && !this.isZ && !this.isMax && this.id !== 'struggle') {
 			let basePower = this.basePower;
 			this.zMove = {};
-			if (Array.isArray(this.multihit)) basePower *= 3;
+			if (Array.isArray(data.multihit)) basePower *= 3;
 			if (!basePower) {
 				this.zMove.basePower = 100;
 			} else if (basePower >= 140) {
@@ -589,49 +602,65 @@ export class DataMove extends BasicEffect implements Readonly<BasicEffect & Move
 			}
 		}
 
-		if (!this.gen) {
-			// special handling for gen8 gmax moves (all of them have num 1000 but they are part of gen8)
-			if (this.num >= 827 && !this.isMax) {
-				this.gen = 9;
-			} else if (this.num >= 743) {
-				this.gen = 8;
-			} else if (this.num >= 622) {
-				this.gen = 7;
-			} else if (this.num >= 560) {
-				this.gen = 6;
-			} else if (this.num >= 468) {
-				this.gen = 5;
-			} else if (this.num >= 355) {
-				this.gen = 4;
-			} else if (this.num >= 252) {
-				this.gen = 3;
-			} else if (this.num >= 166) {
-				this.gen = 2;
-			} else if (this.num >= 1) {
-				this.gen = 1;
-			}
-		}
+		if (!this.gen) this.gen = computeDataMoveGen(this.num, !!this.isMax);
+		assignNewFields(this, data);
 	}
 }
+const EMPTY_MOVE = Utils.deepFreeze(new DataMove({name: '', exists: false}));
 
 export class DexMoves {
 	readonly dex: ModdedDex;
 	readonly moveCache = new Map<ID, Move>();
-	allCache: readonly Move[] | null = null;
+	allCache: readonly Move[];
 
 	constructor(dex: ModdedDex) {
 		this.dex = dex;
+		const Moves = dex.data.Moves;
+		const parent = dex.parentMod ? dex.mod(dex.parentMod) : undefined;
+		const allCache = [];
+		for (const _id in Moves) {
+			let id = _id as ID;
+			if (id.startsWith('hiddenpower')) {
+				id = /([a-z]*)([0-9]*)/.exec(id)![1] as ID;
+			}
+			const moveData = this.dex.data.Moves[id] as any;
+			const moveTextData = this.dex.getDescs('Moves', id, moveData);
+			let move: Move = new DataMove({
+				name: id,
+				...moveData,
+				...moveTextData,
+			});
+			if (move.gen > this.dex.gen) {
+				(move as any).isNonstandard = 'Future';
+			}
+			if (parent) {
+				const parentData = parent.data.Moves[id];
+				const parentMove = parent.moves.getByID(id);
+				if (moveData === parentData &&
+					move.isNonstandard === parentMove.isNonstandard &&
+					move.shortDesc === parentMove.shortDesc &&
+					move.desc === parentMove.desc) {
+					move = parentMove;
+				}
+			}
+			this.moveCache.set(id, move);
+			allCache.push(dex.deepFreeze(move));
+		}
+		this.allCache = Object.freeze(allCache);
 	}
 
 	get(name?: string | Move): Move {
 		if (name && typeof name !== 'string') return name;
-
-		name = (name || '').trim();
-		const id = toID(name);
+		let id = '' as ID;
+		if (name) id = toID(name.trim());
 		return this.getByID(id);
 	}
 
 	getByID(id: ID): Move {
+		if (id === '') return EMPTY_MOVE;
+		if (id.startsWith('hiddenpower')) {
+			id = /([a-z]*)([0-9]*)/.exec(id)![1] as ID;
+		}
 		let move = this.moveCache.get(id);
 		if (move) return move;
 		if (this.dex.data.Aliases.hasOwnProperty(id)) {
@@ -641,36 +670,10 @@ export class DexMoves {
 			}
 			return move;
 		}
-		if (id.startsWith('hiddenpower')) {
-			id = /([a-z]*)([0-9]*)/.exec(id)![1] as ID;
-		}
-		if (id && this.dex.data.Moves.hasOwnProperty(id)) {
-			const moveData = this.dex.data.Moves[id] as any;
-			const moveTextData = this.dex.getDescs('Moves', id, moveData);
-			move = new DataMove({
-				name: id,
-				...moveData,
-				...moveTextData,
-			});
-			if (move.gen > this.dex.gen) {
-				(move as any).isNonstandard = 'Future';
-			}
-		} else {
-			move = new DataMove({
-				name: id, exists: false,
-			});
-		}
-		if (move.exists) this.moveCache.set(id, this.dex.deepFreeze(move));
-		return move;
+		return new DataMove({name: id, exists: false});
 	}
 
 	all(): readonly Move[] {
-		if (this.allCache) return this.allCache;
-		const moves = [];
-		for (const id in this.dex.data.Moves) {
-			moves.push(this.getByID(id as ID));
-		}
-		this.allCache = Object.freeze(moves);
 		return this.allCache;
 	}
 }

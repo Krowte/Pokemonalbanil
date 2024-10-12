@@ -7,6 +7,11 @@
 import {Utils} from '../lib';
 
 /**
+* Do not insert user input, only populate with trusted data.
+* Populated by ./sim/dex.ts then frozen.
+*/
+export const _toIDCache: Map<string, ID> = new Map();
+/**
 * Converts anything to an ID. An ID must have only lowercase alphanumeric
 * characters.
 *
@@ -20,18 +25,33 @@ import {Utils} from '../lib';
 * commonly it's used.
 */
 export function toID(text: any): ID {
-	// The sucrase transformation of optional chaining is too expensive to be used in a hot function like this.
-	/* eslint-disable @typescript-eslint/prefer-optional-chain */
-	if (text && text.id) {
-		text = text.id;
-	} else if (text && text.userid) {
-		text = text.userid;
-	} else if (text && text.roomid) {
-		text = text.roomid;
+	if (typeof text === 'string') {
+	        // 99% case, skip checks
+	} else {
+	        if (text) text = text.id || text.userid || text.roomid || text;
+	        if (typeof text === 'number') text = '' + text;
+	        else if (typeof text !== 'string') return '';
 	}
-	if (typeof text !== 'string' && typeof text !== 'number') return '';
-	return ('' + text).toLowerCase().replace(/[^a-z0-9]+/g, '') as ID;
-	/* eslint-enable @typescript-eslint/prefer-optional-chain */
+	// very often text is already a valid ID.
+	if (/^[a-z0-9]*$/.test(text)) return text;
+	// Next, we often produce the same IDs many times.
+	// Otherwise, fallback to the generic case
+	return _toIDCache.get(text) || text.toLowerCase().replace(/[^a-z0-9]+/g, '') as ID;
+}
+
+/**
+ * Like Object.assign but only fields missing from self.
+ * Facilitates consistent field ordering in constructors.
+ * Modifies self in-place.
+ */
+export function assignNewFields(self: AnyObject, data: AnyObject) {
+	for (const k in data) {
+		// to behave like Object.assign, skip inherited fields
+		if (!data.hasOwnProperty(k)) continue;
+		// FIXME: decide whether this should be 'in' or 'hasOwnProperty'
+		if (k in self) continue;
+		self[k] = data[k];
+	}
 }
 
 export class BasicEffect implements EffectData {
@@ -101,15 +121,18 @@ export class BasicEffect implements EffectData {
 	/** ??? */
 	sourceEffect: string;
 
-	constructor(data: AnyObject) {
-		this.exists = true;
-		Object.assign(this, data);
-
+	/**
+	 * Pass 'false' for the second parameter if you only want the declared fields of BasicEffect
+	 * to be initialized - the other properties of data will not be copied.
+	 * This is to help w/ V8 hidden classes (want to init fields in consistent order)
+	 */
+	constructor(data: AnyObject, copyOtherFields = true) {
 		this.name = Utils.getString(data.name).trim();
+		// TODO: this logic needs to be in Moves constructor
 		this.id = data.realMove ? toID(data.realMove) : toID(this.name); // Hidden Power hack
 		this.fullname = Utils.getString(data.fullname) || this.name;
 		this.effectType = Utils.getString(data.effectType) as EffectType || 'Condition';
-		this.exists = !!(this.exists && this.id);
+		this.exists = !!((data.exists || !('exists' in data)) && this.id);
 		this.num = data.num || 0;
 		this.gen = data.gen || 0;
 		this.shortDesc = data.shortDesc || '';
@@ -121,6 +144,10 @@ export class BasicEffect implements EffectData {
 		this.status = data.status as ID || undefined;
 		this.weather = data.weather as ID || undefined;
 		this.sourceEffect = data.sourceEffect || '';
+
+		if (copyOtherFields) {
+			assignNewFields(this, data);
+		}
 	}
 
 	toString() {
@@ -133,17 +160,18 @@ export class Nature extends BasicEffect implements Readonly<BasicEffect & Nature
 	readonly plus?: StatIDExceptHP;
 	readonly minus?: StatIDExceptHP;
 	constructor(data: AnyObject) {
-		super(data);
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
-		data = this;
+		super(data, false);
 
 		this.fullname = `nature: ${this.name}`;
 		this.effectType = 'Nature';
 		this.gen = 3;
 		this.plus = data.plus || undefined;
 		this.minus = data.minus || undefined;
+
+		assignNewFields(this, data);
 	}
 }
+const EMPTY_NATURE = Utils.deepFreeze(new Nature({name: '', exists: false}));
 
 export interface NatureData {
 	name: string;
@@ -154,52 +182,60 @@ export interface NatureData {
 export type ModdedNatureData = NatureData | Partial<Omit<NatureData, 'name'>> & {inherit: true};
 
 export interface NatureDataTable {[natureid: IDEntry]: NatureData}
+export interface ModdedNatureDataTable {[natureid: IDEntry]: ModdedNatureData}
 
 
 export class DexNatures {
 	readonly dex: ModdedDex;
 	readonly natureCache = new Map<ID, Nature>();
-	allCache: readonly Nature[] | null = null;
+	allCache: readonly Nature[];
 
 	constructor(dex: ModdedDex) {
 		this.dex = dex;
+		const Natures = dex.data.Natures;
+		const parent = dex.parentMod ? dex.mod(dex.parentMod) : undefined;
+		// 3 is hard-coded in Nature ctor, and this must match logic for nature.isNonstandard.
+		const sameGenClass = parent && (parent.gen < 3) === (dex.gen < 3);
+		if (parent && Natures === parent.data.Natures && sameGenClass) {
+			this.natureCache = parent.natures.natureCache;
+			this.allCache = parent.natures.all();
+			return;
+		}
+
+		const allCache = [];
+		for (const _id in Natures) {
+			const id = _id as ID;
+			const natureData = Natures[id];
+			let nature;
+			if (parent && sameGenClass && natureData === parent.data.Natures[id]) {
+				nature = parent.natures.getByID(id);
+			} else {
+				nature = new Nature(natureData);
+				if (nature.gen > dex.gen) nature.isNonstandard = 'Future';
+				dex.deepFreeze(nature);
+			}
+			this.natureCache.set(id, nature);
+			allCache.push(nature);
+		}
+		this.allCache = Object.freeze(allCache);
 	}
 
 	get(name: string | Nature): Nature {
 		if (name && typeof name !== 'string') return name;
-
 		return this.getByID(toID(name));
 	}
+
 	getByID(id: ID): Nature {
+		if (id === '') return EMPTY_NATURE;
 		let nature = this.natureCache.get(id);
-		if (nature) return nature;
-
-		if (this.dex.data.Aliases.hasOwnProperty(id)) {
-			nature = this.get(this.dex.data.Aliases[id]);
-			if (nature.exists) {
-				this.natureCache.set(id, nature);
-			}
-			return nature;
+		if (!nature && this.dex.data.Aliases.hasOwnProperty(id)) {
+			nature = this.getByID(toID(this.dex.data.Aliases[id]));
+			if (nature.exists) this.natureCache.set(id, nature);
 		}
-		if (id && this.dex.data.Natures.hasOwnProperty(id)) {
-			const natureData = this.dex.data.Natures[id];
-			nature = new Nature(natureData);
-			if (nature.gen > this.dex.gen) nature.isNonstandard = 'Future';
-		} else {
-			nature = new Nature({name: id, exists: false});
-		}
-
-		if (nature.exists) this.natureCache.set(id, this.dex.deepFreeze(nature));
-		return nature;
+		return nature || new Nature({name: id, exists: false});
 	}
 
 	all(): readonly Nature[] {
-		if (this.allCache) return this.allCache;
-		const natures = [];
-		for (const id in this.dex.data.Natures) {
-			natures.push(this.getByID(id as ID));
-		}
-		this.allCache = Object.freeze(natures);
 		return this.allCache;
 	}
 }
@@ -217,6 +253,7 @@ export interface ModdedTypeDataTable {[typeid: IDEntry]: ModdedTypeData}
 
 type TypeInfoEffectType = 'Type' | 'EffectType';
 
+const EMPTY_OBJECT = {};
 export class TypeInfo implements Readonly<TypeData> {
 	/**
 	 * ID. This will be a lowercase version of the name with all the
@@ -254,34 +291,66 @@ export class TypeInfo implements Readonly<TypeData> {
 	/** The DVs to get this Type Hidden Power (in gen 2). */
 	readonly HPdvs: SparseStatsTable;
 
-	constructor(data: AnyObject) {
-		this.exists = true;
-		Object.assign(this, data);
-
-		this.name = data.name;
+	/**
+	 * If 'true' is passed for the 'canCacheFields' parameter, objects may be re-used
+	 * across instances of TypeInfo. Basically, if you're going to immediately deepFreeze this,
+	 * you can safely pass true.
+	 */
+	constructor(data: AnyObject, canCacheFields = false) {
+		// initialize required fields in a consistent order bc of V8's hidden classes
 		this.id = data.id;
+		this.name = data.name;
 		this.effectType = Utils.getString(data.effectType) as TypeInfoEffectType || 'Type';
-		this.exists = !!(this.exists && this.id);
+		this.exists = !!((data.exists || !('exists' in data)) && data.id);
 		this.gen = data.gen || 0;
 		this.isNonstandard = data.isNonstandard || null;
-		this.damageTaken = data.damageTaken || {};
-		this.HPivs = data.HPivs || {};
-		this.HPdvs = data.HPdvs || {};
+		this.damageTaken = data.damageTaken || (canCacheFields ? EMPTY_OBJECT : {});
+		this.HPivs = data.HPivs || (canCacheFields ? EMPTY_OBJECT : {});
+		this.HPdvs = data.HPdvs || (canCacheFields ? EMPTY_OBJECT : {});
+		assignNewFields(this, data);
 	}
 
 	toString() {
 		return this.name;
 	}
 }
+const EMPTY_TYPE_INFO = Utils.deepFreeze(new TypeInfo({name: '', id: '', exists: false, effectType: 'EffectType'}));
 
 export class DexTypes {
 	readonly dex: ModdedDex;
 	readonly typeCache = new Map<ID, TypeInfo>();
-	allCache: readonly TypeInfo[] | null = null;
-	namesCache: readonly string[] | null = null;
+	allCache: readonly TypeInfo[];
+	namesCache: readonly string[];
 
 	constructor(dex: ModdedDex) {
 		this.dex = dex;
+		const TypeChart = dex.data.TypeChart;
+		const parent = dex.parentMod ? dex.mod(dex.parentMod) : undefined;
+		if (parent && TypeChart === parent.data.TypeChart) {
+			this.typeCache = parent.types.typeCache;
+			this.allCache = parent.types.all();
+			this.namesCache = parent.types.namesCache;
+			return;
+		}
+		const allCache = [];
+		const namesCache = [];
+		for (const _id in TypeChart) {
+			const id = _id as ID;
+			const typeData = TypeChart[id];
+			let typeInfo;
+			if (parent && typeData === parent.data.TypeChart[id]) {
+				typeInfo = parent.types.getByID(id);
+			} else {
+				const typeName = id.charAt(0).toUpperCase() + id.substr(1);
+				typeInfo = new TypeInfo({name: typeName, id, ...typeData}, true);
+				dex.deepFreeze(typeInfo);
+			}
+			this.typeCache.set(id, typeInfo);
+			allCache.push(typeInfo);
+			if (!typeInfo.isNonstandard) namesCache.push(typeInfo.name);
+		}
+		this.allCache = Object.freeze(allCache);
+		this.namesCache = Object.freeze(namesCache);
 	}
 
 	get(name: string | TypeInfo): TypeInfo {
@@ -290,41 +359,27 @@ export class DexTypes {
 	}
 
 	getByID(id: ID): TypeInfo {
-		let type = this.typeCache.get(id);
-		if (type) return type;
-
-		const typeName = id.charAt(0).toUpperCase() + id.substr(1);
-		if (typeName && this.dex.data.TypeChart.hasOwnProperty(id)) {
-			type = new TypeInfo({name: typeName, id, ...this.dex.data.TypeChart[id]});
-		} else {
-			type = new TypeInfo({name: typeName, id, exists: false, effectType: 'EffectType'});
-		}
-
-		if (type.exists) this.typeCache.set(id, this.dex.deepFreeze(type));
-		return type;
+		if (id === '') return EMPTY_TYPE_INFO;
+		return this.typeCache.get(id) ||
+			new TypeInfo({
+				name: id.charAt(0).toUpperCase() + id.substr(1),
+				id,
+				exists: false,
+				effectType: 'EffectType',
+			});
 	}
 
 	names(): readonly string[] {
-		if (this.namesCache) return this.namesCache;
-
-		this.namesCache = this.all().filter(type => !type.isNonstandard).map(type => type.name);
-
 		return this.namesCache;
 	}
 
 	isName(name: string): boolean {
 		const id = name.toLowerCase();
 		const typeName = id.charAt(0).toUpperCase() + id.substr(1);
-		return name === typeName && this.dex.data.TypeChart.hasOwnProperty(id);
+		return name === typeName && this.dex.data.TypeChart.hasOwnProperty(id as ID);
 	}
 
 	all(): readonly TypeInfo[] {
-		if (this.allCache) return this.allCache;
-		const types = [];
-		for (const id in this.dex.data.TypeChart) {
-			types.push(this.getByID(id as ID));
-		}
-		this.allCache = Object.freeze(types);
 		return this.allCache;
 	}
 }
