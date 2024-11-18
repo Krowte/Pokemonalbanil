@@ -22086,6 +22086,25 @@ export const Moves: import('../sim/dex-moves').MoveDataTable = {
 		zMove: {basePower: 120},
 		maxMove: {basePower: 140},
 	},
+		Fuerza2: {
+		num: 921,
+		accuracy: 100,
+		basePower: 100,
+		category: "Psychical",
+		name: "Fuerza 2",
+		pp: 20,
+		priority: 0,
+		flags: {protect: 1, mirror: 1, contact: 1,},
+		secondary: {
+			chance: 100,
+			boosts: {
+				spd: -2, def: -2,
+			},
+		},
+		target: "normal",
+		type: "Poison",
+		contestType: "Beautiful",
+	},
 	shadowstrike: {
 		num: 0,
 		accuracy: 95,
