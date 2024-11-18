@@ -22066,6 +22066,26 @@ export const Moves: import('../sim/dex-moves').MoveDataTable = {
 		type: "Rock",
 		contestType: "Beautiful",
 	},
+		tripleinmersion: {
+		num: 920,
+		accuracy: 90,
+		basePower: 20,
+		basePowerCallback(pokemon, target, move) {
+			return 20 * move.hit;
+		},
+		category: "Physical",
+		name: "Triple Inmersión",
+		pp: 10,
+		priority: 0,
+		flags: {contact: 1, protect: 1, mirror: 1, metronome: 1},
+		multihit: 3,
+		multiaccuracy: true,
+		secondary: null,
+		target: "normal",
+		type: "water",
+		zMove: {basePower: 120},
+		maxMove: {basePower: 140},
+	},
 	shadowstrike: {
 		num: 0,
 		accuracy: 95,
