@@ -5651,4 +5651,40 @@ export const Abilities: import('../sim/dex-abilities').AbilityDataTable = {
 		rating: 3,
 		num: -4,
 	},
+		acometida: {
+		onStart(pokemon) {
+			pokemon.addVolatile('acometida');
+		},
+		onEnd(pokemon) {
+			delete pokemon.volatiles['acometida'];
+			this.add('-end', pokemon, 'Acometida', '[silent]');
+		},
+		condition: {
+			duration: 1,
+			onResidualOrder: 28,
+			onResidualSubOrder: 2,
+			onStart(target) {
+				this.add('-start', target, 'ability: Acometida');
+			},
+			onResidual(pokemon) {
+				if (!pokemon.activeTurns) {
+					this.effectState.duration += 1;
+				}
+			},
+			onModifyAtkPriority: 5,
+			onModifyAtk(atk, pokemon) {
+				return this.chainModify(1.2);
+			},
+			onModifySpe(spe, pokemon) {
+				return this.chainModify(1.5);
+			},
+			onEnd(target) {
+				this.add('-end', target, 'Acometida');
+			},
+		},
+		flags: {},
+		name: "Acometida",
+		rating: -1,
+		num: 311,
+	},
 };
